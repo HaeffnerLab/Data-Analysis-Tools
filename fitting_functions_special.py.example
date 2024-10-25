@@ -1,0 +1,244 @@
+import numpy as np
+import scipy.constants as scc
+import scipy.special as sp
+import scipy.misc as scm
+from scipy.special import eval_genlaguerre as laguerre
+
+from fitting_tools import function_fitter
+
+
+"""
+Below are the functions which have been defined, as child classes of the class function_fitter.
+
+Defining a new fitting function is simple! (I hope.)
+
+Short version:
+Just copy one of the classes already defined. It may be clear what needs to be changed given the examples below. If not...
+Only change (1) self.parameters and (2) the definition of full_fun() (which is the function you want to fit to).
+The first argument to full_fun() after "self" should be the x-axis values. Make sure the elements of the list self.parameters match all the arguments after this one.
+
+Long version:
+To define a function to be used as a fitting function, define the class as follows:
+A. Define the class as a child instance of the class function_fitter.
+B. __init__ should consist of 2 lines:
+   1. self.parameters = (a list of strings, see step C for details)
+   2. self.setup()
+C. Define a function full_fun(self, ...) to be the function to be fitted. The first argument after self should be the x-axis, and the rest are just any arguments the function needs.
+   These will each later be set to either be fitted or fixed at some defined value.
+   The variable self.parameters should be a list of strings denoting these parameters (the ones excluding the x-axis), so the length of this list should be equal to the number of arguments
+   excluding the first one. These don't necessarily need to have the same name as the arguments themselves (though it's probably easier that way), but the arguments they refer to *DO* need to
+   be in the same order.
+"""
+
+
+class exponential3_decay(function_fitter):
+    # For rotational decoherence decay shape
+    def __init__(self):
+        self.parameters = ['tau', 'startfrom', 'decayto']
+        self.setup()
+
+    def full_fun(self, times, tau, startfrom, decayto):
+        return startfrom + (decayto-startfrom)*(1-np.exp(-(times**3)/(tau**3)))
+
+class exponential3_decay_wcontrastosc(function_fitter):
+    # Same as exponential3_decay but with contrast oscillations
+    # These depend on the value of Delta_l and the rotor constant (calculated from f_trap_MHz and f_rot_kHz)
+    # The parameters a and b are empirical values that account for imperfect operations. Can use simulations/rotating_interferometer/simulations_of_expt/rotor_sim_rabi_and_ramsey.ipynb to get them.
+    # See also lablog/spacetime/?q=node/625
+
+    def __init__(self):
+        self.parameters = ['tau_ms', 'Delta_l', 'f_trap_MHz', 'f_rot_kHz', 'a', 'b', 'startfrom', 'decayto']
+        self.setup()
+
+    def full_fun(self, times_ms, tau_ms, Delta_l, f_trap_MHz, f_rot_kHz, a, b, startfrom, decayto):
+        t = 1e-3 * times_ms 
+
+        w_trap = 1e6 * 2*np.pi * f_trap_MHz
+        w_rot = 1e3 * 2*np.pi * f_rot_kHz
+
+        # calculate moment of inertia
+        m = 40*scc.atomic_mass
+        r0 = 1/2.0 * (scc.e**2/(4*np.pi*scc.epsilon_0) * 2.0/(m*w_trap**2))**(1.0/3) # undistorted rotor radius
+        I0 = 2*m*r0**2  # undistorted moment of inertia
+
+        # calculate effective rotor frequency
+        w_r = scc.hbar/(2*I0)                                    # Non-distorted rotor frequency
+        D = 4*w_r**3 / (3*w_trap**2)                             # First-order distortion constant
+        l_0 = min(np.abs(np.roots([4*D, 0, -2*w_r, w_rot])))     # Angular momentum expectation value with first-order distortion (solves equation for l_0 given w_rot which is cubic in l_0)
+        w_r_eff = w_r - 6*D*l_0**2                               # "Effective" in terms of spacing of the transition frequencies
+
+        contrast_osc_envelope = np.abs( (a+b) + (a-b)*np.cos(Delta_l**2*w_r_eff*t) - 1 ) / (2*a - 1)
+        decoherence_envelope = np.exp(-(times_ms**3)/(tau_ms**3))
+        return startfrom + (decayto-startfrom)*(1 - contrast_osc_envelope*decoherence_envelope)
+
+class rot_ramsey_decay(function_fitter):
+    def __init__(self):
+        self.parameters = ['sigma_l', 'Omega_kHz', 'delta_kHz', 'scale', 'Delta_l', 'f_trap_MHz', 'f_rot_kHz']
+        self.setup()
+
+    def full_fun(self, times_us, sigma_l, Omega_kHz, delta_kHz, scale, Delta_l, f_trap_MHz, f_rot_kHz):
+        # convert inputs to SI
+        times = 1e-6 * times_us
+        Omega = 1e3 * 2*np.pi * Omega_kHz
+        delta = 1e3 * 2*np.pi * delta_kHz
+        w_trap = 1e6 * 2*np.pi * f_trap_MHz
+        w_rot = 1e3 * 2*np.pi * f_rot_kHz
+
+        # calculate moment of inertia
+        m = 40*scc.atomic_mass
+        r0 = 1/2.0 * (scc.e**2/(4*np.pi*scc.epsilon_0) * 2.0/(m*w_trap**2))**(1.0/3) # undistorted rotor radius
+        I0 = 2*m*r0**2  # undistorted moment of inertia
+
+        # calculate effective rotor frequency
+        w_r = scc.hbar/(2*I0)                                    # Non-distorted rotor frequency
+        D = 4*w_r**3 / (3*w_trap**2)                             # First-order distortion constant
+        l_0 = min(np.abs(np.roots([4*D, 0, -2*w_r, w_rot])))     # Angular momentum expectation value with first-order distortion (solves equation for l_0 given w_rot which is cubic in l_0)
+        w_r_eff = w_r - 6*D*l_0**2                               # "Effective" in terms of spacing of the transition frequencies
+
+        # calculate l distribution and detunings
+        ls = np.arange(int(l_0-3*sigma_l), int(l_0+3*sigma_l))
+        c_ls_unnorm = np.exp(-(ls-l_0)**2/(4.0*sigma_l**2))
+        c_ls = c_ls_unnorm/np.linalg.norm(c_ls_unnorm)
+        delta_ls = 2*w_r_eff*Delta_l*(l_0-ls) + delta
+
+        def calc_ramsey_exc(c_ls, delta_ls, Omega, T):
+            Omega_gens = np.sqrt(Omega**2 + delta_ls**2) #generalized Rabi frequency
+            u1s = np.pi*Omega_gens/(4*Omega)
+            u2s = delta_ls*T/2.0
+            return sum(np.abs(c_ls)**2 * (2*Omega/Omega_gens**2*np.sin(u1s) * (Omega_gens*np.cos(u1s)*np.cos(u2s) - delta_ls*np.sin(u1s)*np.sin(u2s)))**2)
+            
+        return [scale * calc_ramsey_exc(c_ls, delta_ls, Omega, T) for T in times]
+
+class rot_ramsey_decay_general(function_fitter):
+    def __init__(self):
+        self.parameters = ['sigma_l', 'delta_kHz', 'Delta_l', 'f_trap_MHz', 'f_rot_kHz', 'scale', 'contrast', 'phase']
+        self.setup()
+
+    def full_fun(self, times_us, sigma_l, delta_kHz, Delta_l, f_trap_MHz, f_rot_kHz, scale, contrast, phase):
+        # convert inputs to SI
+        times = 1e-6 * times_us
+        delta = 1e3 * 2*np.pi * delta_kHz
+        w_trap = 1e6 * 2*np.pi * f_trap_MHz
+        w_rot = 1e3 * 2*np.pi * f_rot_kHz
+
+        # calculate moment of inertia
+        m = 40*scc.atomic_mass
+        r0 = 1/2.0 * (scc.e**2/(4*np.pi*scc.epsilon_0) * 2.0/(m*w_trap**2))**(1.0/3) # undistorted rotor radius
+        I0 = 2*m*r0**2  # undistorted moment of inertia
+
+        # calculate effective rotor frequency
+        w_r = scc.hbar/(2*I0)                                    # Non-distorted rotor frequency
+        D = 4*w_r**3 / (3*w_trap**2)                             # First-order distortion constant
+        l_0 = min(np.abs(np.roots([4*D, 0, -2*w_r, w_rot])))     # Angular momentum expectation value with first-order distortion (solves equation for l_0 given w_rot which is cubic in l_0)
+        w_r_eff = w_r - 6*D*l_0**2                               # "Effective" in terms of spacing of the transition frequencies
+        
+        sigma_f = 2*w_r_eff*Delta_l*sigma_l               # Frequency-space standard deviation of the line
+        Ct = contrast*np.exp(-(sigma_f*times)**2/2.0)     # Inverse Fourier transform of Gaussian lineshape from frequency domain to time domain
+        return scale * (Ct*np.cos(delta*times-phase) + 1.0)/2.0
+
+class rot_rabi_flop(function_fitter):
+    def __init__(self):
+        self.parameters = ['sigma_l', 'Omega_kHz', 'delta_kHz', 'Delta_l', 'f_trap_MHz', 'f_rot_kHz', 'scale']
+        self.setup()
+
+    def full_fun(self, times_us, sigma_l, Omega_kHz, delta_kHz, Delta_l, f_trap_MHz, f_rot_kHz, scale):
+        if sigma_l > 3000:
+            sigma_l = 3000.0
+
+        times = 1e-6 * times_us
+        Omega = 1e3 * 2*np.pi * Omega_kHz
+        delta = 1e3 * 2*np.pi * delta_kHz
+        w_trap = 1e6 * 2*np.pi * f_trap_MHz
+        w_rot = 1e3 * 2*np.pi * f_rot_kHz
+
+        # calculate moment of inertia
+        m = 40*scc.atomic_mass
+        r0 = 1/2.0 * (scc.e**2/(4*np.pi*scc.epsilon_0) * 2.0/(m*w_trap**2))**(1.0/3) # undistorted rotor radius
+        I0 = 2*m*r0**2  # undistorted moment of inertia
+
+        # calculate effective rotor frequency
+        w_r = scc.hbar/(2*I0)                                    # Non-distorted rotor frequency
+        D = 4*w_r**3 / (3*w_trap**2)                             # First-order distortion constant
+        l_0 = min(np.abs(np.roots([4*D, 0, -2*w_r, w_rot])))     # Angular momentum expectation value with first-order distortion (solves equation for l_0 given w_rot which is cubic in l_0)
+        w_r_eff = w_r - 6*D*l_0**2                               # "Effective" in terms of spacing of the transition frequencies
+
+        # calculate l distribution and detunings
+        ls = np.arange(int(l_0-3*sigma_l), int(l_0+3*sigma_l))
+        c_ls_unnorm = np.exp(-(ls-l_0)**2/(4.0*sigma_l**2))
+        c_ls = c_ls_unnorm/np.linalg.norm(c_ls_unnorm)
+        delta_ls = 2*w_r_eff*Delta_l*(l_0-ls) + delta
+
+        exc = scale * np.sum(np.outer(c_ls**2 * Omega**2/(Omega**2+delta_ls**2), np.ones(len(times))) \
+                    * np.sin(np.outer(np.sqrt(Omega**2+delta_ls**2)/2, times))**2, axis=0)
+
+        return exc
+
+class rot_rabi_flop_with_finite_nbar(function_fitter):
+    # This is a little against the spirit of this suite in that it differs from rot_rabi_flop() by only having 2 extra parameters (nzbar and f_z_MHz, used to calculate a Lamb-Dicke parameter for the vertical direction).
+    # The point of this suite generally is to have a class that defined a type of function very generally, and then use the built-in stuff to de-generalize it as much as you need.
+    # This suggests that since rot_rabi_flop_with_finite_nbar() is more general than rot_rabi_flop(), rot_rabi_flop() is then redundant.
+    # HOWEVER. I think that the extra parameters in rot_rabi_flop_with_finite_nbar() are sufficiently different/specific that it merits its own class, in this particular case.
+    def __init__(self):
+        self.parameters = ['sigma_l', 'Omega_kHz', 'delta_kHz', 'Delta_l', 'f_trap_MHz', 'f_rot_kHz', 'nzbar', 'f_z_MHz', 'scale']
+        self.setup()
+
+    def full_fun(self, times_us, sigma_l, Omega_kHz, delta_kHz, Delta_l, f_trap_MHz, f_rot_kHz, nzbar, f_z_MHz, scale):
+        if sigma_l > 3000:
+            sigma_l = 3000.0
+
+        times = 1e-6 * times_us
+        Omega = 1e3 * 2*np.pi * Omega_kHz
+        delta = 1e3 * 2*np.pi * delta_kHz
+        w_trap = 1e6 * 2*np.pi * f_trap_MHz
+        w_rot = 1e3 * 2*np.pi * f_rot_kHz
+
+        # calculate moment of inertia
+        m = 40*scc.atomic_mass
+        r = 1/2.0 * (scc.e**2/(4*np.pi*scc.epsilon_0) * 2.0/(m*(w_trap**2 - w_rot**2)))**(1/3.0) #rotor radius
+        I = 2*m*r**2  # moment of inertia
+
+        # calculate l distribution and detunings
+        l_0 = I*w_rot/scc.hbar
+        ls = np.arange(int(l_0-3*sigma_l), int(l_0+3*sigma_l))
+        c_ls_unnorm = np.exp(-(ls-l_0)**2/(4.0*sigma_l**2))
+        c_ls = c_ls_unnorm/np.linalg.norm(c_ls_unnorm)
+        delta_ls = scc.hbar*Delta_l/I*(l_0-ls) + delta
+
+        if nzbar == 0:
+            exc = scale * np.sum(np.outer(c_ls**2 * Omega**2/(Omega**2+delta_ls**2), np.ones(len(times))) \
+                    * np.sin(np.outer(np.sqrt(Omega**2+delta_ls**2)/2, times))**2, axis=0)
+        else:
+            w_z = 1e6 * 2*np.pi * f_z_MHz
+            eta = 2*np.pi/(729e-9)*np.sqrt(scc.hbar/(2*2*m*w_z))
+
+            Omega_gens = np.sqrt(Omega**2 + delta_ls**2) #generalized Rabi frequency
+            phases = np.outer(Omega_gens, times) #a 2d array of values of Omega_gen*t, defined here for convenience
+
+            exc = scale * np.sum(np.outer(c_ls**2 * Omega**2/Omega_gens**2, np.ones(len(times))) \
+                    * 1/2.0*(1 - (np.cos(phases) + phases*eta**2*nzbar*np.sin(phases))/(1 + (phases*eta**2*nzbar)**2)), axis=0)
+        return exc
+    
+class diffusion(function_fitter):
+    def __init__(self):
+        self.parameters = ['D', 'y0']
+        self.setup()
+        
+    def full_fun(self, t, D, y0):
+        return np.sqrt(2*D*(t+y0**2/(2*D)))
+    
+class double_gaussian(function_fitter):
+    # assumes same standard deviation for both, and a single global offset
+    def __init__(self):
+        self.parameters = ['center1', 'scale1', 'center2', 'scale2', 'sigma', 'offset']
+        self.setup()
+        
+    def full_fun(self, frequency, center1, scale1, center2, scale2, sigma, offset):
+        return offset + scale1*np.exp(-(frequency-center1)**2 / (2*sigma**2)) + scale2*np.exp(-(frequency-center2)**2 / (2*sigma**2))
+    
+class quadrupole_scan(function_fitter):
+    def __init__(self):
+        self.parameters = ['U1', 'U3', 'offset']
+        self.setup()
+
+    def full_fun(self, x, U1, U3, offset):
+        return offset + U1*np.cos(np.pi/180*(x - 300)) + U3*np.cos(np.pi/180*(x - 210))

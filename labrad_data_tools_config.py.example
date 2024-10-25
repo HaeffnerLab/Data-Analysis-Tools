@@ -1,0 +1,18 @@
+SCAN_LISTS_DIRECTORY = '/home/space-time/LabRAD/scan_lists/'
+DATA_DIRECTORY = '/home/space-time/LabRAD/data/'
+
+# This maps "superscans" to "subscans", for 2D scans.
+# Key is superscan experiment name (named by the folder it's saved in)
+# Value is a 3-tuple:
+    # First element is a list of subscans corresponding to that superscan. (Must be a list even if there is only one.)
+    # Second element is the number of subscans per data point in the super scan (1 for most, but 2 for e.g. heating rates which need both a red and blue sideband scan for each data point)
+    # Third element is either 'old' or 'new', indicating whether this scan is from the old or new scriptscanner.
+# This is used to get subscan data given a superscan.
+MULTID_SCAN_MAP = {'RamseyScanGap_with_contrast': (['RamseyScanPhase_TwoModes_rotating'], 1, 'old'),
+                   'ExcitationRamsey_TwoMode': (['RamseyScanPhase_TwoModes_rotating'], 1, 'old'),
+                   'Heating_Rate': (['rsb', 'bsb'], 2, 'new'),
+                   'Heating_Rate_Rabi': (['Rabi'], 1, 'new'),
+                   'RamseyContrast': (['contrast'], 1, 'new'),
+                   'RamseyContrast_CompositePulse': (['contrast_composite'], 1, 'new'),
+                   'Diffusion': (['ramsey_gap'], 1, 'new'),
+                   'RotSpinupScan': (['ramsey_gap'], 1, 'new')}
