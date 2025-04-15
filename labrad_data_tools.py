@@ -1,6 +1,6 @@
 """
 Module for importing labrad-saved data from the experimental pc
-Functions get_data, get_base_data, and get_parameters should work regardless of whether data was saved using SSV1 or SSV2.
+Functions get_data, get_subscantimes, and get_parameters should work regardless of whether data was saved using SSV1 or SSV2.
 Functions get_photon_counts and get_hist only work with data saved from SSV2.
 Assumes some stuff about the directory structure of how the data is saved; depending on how your script scanner saves your data, results may vary.
 """
@@ -92,12 +92,15 @@ def get_data_manual(directory, exclude=[]):
     return (x, y)
 
 
-def get_raw_number_dark(date, scantime, exclude=[]):
+def get_raw_number_dark(date, scantime, exclude=[], threshold_list=None):
     """
     Input "scantime" can be a list. This concatenates the datasets of several scans, and is intended to be used for datasets which span multiple (usually consecutive) scans.
-
+    
     The optional argument "exclude" is a list of indices in the scan to exclude from being returned (e.g. bad data points that you don't want to inlcude).
     To exclude data points when using N time scans, "exclude" must be a list of length N, each element being a list containing the indices to exclude for the corresponding time scan. 
+    
+    threshold_list is the list of photon count thresholds. By default, this is automatically inferred from the the parameter StateReadout.threshold_list saved for this scan.
+    Can optionally override the saved threshold_list by passing a manual one as a keyword argument. Should be a list of length n_ions.
     """
 
     # Allow concatenation of data if input "time" is a list
@@ -113,16 +116,16 @@ def get_raw_number_dark(date, scantime, exclude=[]):
         for (i, t) in enumerate(scantime):
             t = t.replace('.', '_')        # Change a period in the time string to an underscore
             if len(exclude) != 0:
-                (xi, yi) = _get_raw_number_dark_single(date, t, exclude=exclude[i])
+                (xi, yi) = _get_raw_number_dark_single(date, t, exclude=exclude[i], threshold_list=threshold_list)
             else:
-                (xi, yi) = _get_raw_number_dark_single(date, t, exclude=exclude)
+                (xi, yi) = _get_raw_number_dark_single(date, t, exclude=exclude, threshold_list=threshold_list)
             x = np.concatenate((x, xi))
             y = np.concatenate((y, yi)) if y.size else yi
         return (x, y)
 
     else:
         scantime = scantime.replace('.', '_')        # Change a period in the time string to an underscore
-        (x, y) = _get_raw_number_dark_single(date, scantime, exclude=exclude)
+        (x, y) = _get_raw_number_dark_single(date, scantime, exclude=exclude, threshold_list=threshold_list)
         return (x, y)
 
 
@@ -172,9 +175,9 @@ def get_consecutive_scantimes(date, first_scantime, last_scantime, exclude=[]):
     return scantimes
 
 
-def get_base_scantimes(date, superscantime, exclude=[], return_xvalues=False):
+def get_subscantimes(date, superscantime, exclude=[], return_xvalues=False):
     """
-    Returns list of scan times corresponding to the base scans of a superscan
+    Returns list of scan times corresponding to the subscans of a superscan
     (e.g. the scantimes of the phase measurements of a Ramsey with contrast measurement)
     If return_xvalues=True, then returns a list of 2-tuples, the first element being the corresponding x-value of the superscan, and the second being the scantime.
     """
@@ -192,9 +195,9 @@ def get_base_scantimes(date, superscantime, exclude=[], return_xvalues=False):
         for (i, sst_i) in enumerate(superscantime):
             sst_i = sst_i.replace('.', '_')        # Change a period in the time string to an underscore
             if len(exclude) != 0:
-                result_i = _get_base_scantimes_single(date, sst_i, exclude=exclude[i], return_xvalues=return_xvalues)
+                result_i = _get_subscantimes_single(date, sst_i, exclude=exclude[i], return_xvalues=return_xvalues)
             else:
-                result_i = _get_base_scantimes_single(date, sst_i, exclude=exclude, return_xvalues=return_xvalues)
+                result_i = _get_subscantimes_single(date, sst_i, exclude=exclude, return_xvalues=return_xvalues)
             if return_xvalues:
                 (xvalues_i, subscantimes_i) = result_i
                 xvalues = np.concatenate((xvalues, xvalues_i))
@@ -203,7 +206,7 @@ def get_base_scantimes(date, superscantime, exclude=[], return_xvalues=False):
             subscantimes += subscantimes_i
     else:
         superscantime = superscantime.replace('.', '_')        # Change a period in the time string to an underscore
-        result = _get_base_scantimes_single(date, superscantime, exclude=exclude, return_xvalues=return_xvalues)
+        result = _get_subscantimes_single(date, superscantime, exclude=exclude, return_xvalues=return_xvalues)
         if return_xvalues:
             (xvalues, subscantimes) = result
         else:
@@ -264,29 +267,38 @@ def get_hist(date, scantime, histNum):
 
     date and scantime are strings indicating which scan to use. histNum is the number of the histogram to look at. Formatting example:
     
-    get_hist('20180606', '1340_50', [0, 1])
+    get_hist('20180606', '1340_50', 3)
 
     Returns a tuple (bins, instances) of arrays containing the histogram.
-
-    Input "histNum" can also be a list. This adds the listed histograms of that scan together.
     """
 
-    # Change a period in the time string to an underscore
-    scantime = scantime.replace('.', '_')
+    directory = get_data_directory(date, scantime)
+    histogram_files = sorted([filename for filename in os.listdir(directory) if filename.endswith('Histogram.csv')])
+    min_hist_number = int(histogram_files[0][:5])
+    max_hist_number = int(histogram_files[-1][:5])
+    hist_prefix = str(histNum).zfill(5)
 
-    # Allow concatenation of data if input "histNum" is a list
-    if isinstance(histNum, list):
-        bins      = np.array([])
-        instances = np.array([])
-        for (i, hist) in enumerate(histNum):
-            (bins, instances_i) = _get_hist_single(date, scantime, histNum[i])
-            instances = instances+instances_i if instances.size else instances_i
-        return (bins, instances)
+    # Check the directory for the histogram file. If not present, raise an error
+    file_path = None
+    for filename in os.listdir(directory):
+        if filename.endswith('Histogram.csv') and filename.startswith(hist_prefix):
+            file_path = directory + filename
+            break
+    if file_path is None:
+        raise ValueError('Histogram number must be between {} and {}.'.format(min_hist_number, max_hist_number))
 
-    else:
-        scantime = scantime.replace('.', '_')        # Change a period in the time string to an underscore
-        (bins, instances) = _get_hist_single(date, scantime, histNum)
-        return (bins, instances)
+    # Extract the data
+    data_arr = np.loadtxt(file_path, delimiter=',')
+    if data_arr.ndim == 1:
+        # If only 1 data point, expand into a 2d array
+        data_arr = np.expand_dims(data_arr, axis=0)
+
+    # Sort the data into x and y arrays
+    bins = data_arr[:, 0]
+    instances = data_arr[:, 1]
+
+    return (bins, instances)
+
 
 
 def get_parameters(date, scantime, search=None):
@@ -458,9 +470,13 @@ def _get_data_single(date, scantime, exclude=[]):
     return (x, y)
 
 
-def _get_raw_number_dark_single(date, scantime, exclude=[]):
+def _get_raw_number_dark_single(date, scantime, exclude=[], threshold_list=None):
     """
     Infers "number dark" for each datapoint from raw PMT counts and set photon count thresholds
+    
+    threshold_list is the list of photon count thresholds. By default, this is automatically inferred from the the parameter StateReadout.threshold_list saved for this scan.
+    Can optionally override the saved threshold_list by passing a manual one as a keyword argument. Should be a list of length n_ions.
+    
     Returns (x, y), where x is the x-axis data and y is n-ion excitation probabilities
     For N ions (inferred from length of threshold_list), y-data has N+1 columns. Column j is the probability that j ions were found dark (excited)
     
@@ -483,11 +499,14 @@ def _get_raw_number_dark_single(date, scantime, exclude=[]):
     # Extract the raw readout data
     raw = np.loadtxt(file_path, delimiter=',')
 
-    # Find the photon count thresholds
-    threshold_list_strings = get_parameters(date, scantime)['StateReadout.threshold_list'].split(',')
-    threshold_list = [0] + [int(count) for count in threshold_list_strings]
-    n_ions = len(threshold_list)-1
+    # Find the photon count thresholds (unless threshold list was explicitly passed into this function)
+    if threshold_list is None:
+        threshold_list_strings = get_parameters(date, scantime)['StateReadout.threshold_list'].split(',')
+        threshold_list = [int(count) for count in threshold_list_strings]
+    
+    threshold_list_incl_0 = [0] + threshold_list
 
+    n_ions = len(threshold_list)
     repeats = int(get_parameters(date, scantime)['StateReadout.repeat_each_measurement'])
 
     y = np.zeros((len(x), n_ions+1))
@@ -502,9 +521,9 @@ def _get_raw_number_dark_single(date, scantime, exclude=[]):
         # Add this photon count to the bin corresponding to having j ions dark
         for count in raw_y:
             for j in range(n_ions):
-                if threshold_list[j] <= count < threshold_list[j+1]:
+                if threshold_list_incl_0[j] <= count < threshold_list_incl_0[j+1]:
                     y_i[j] += 1
-            if count >= threshold_list[n_ions]:
+            if count >= threshold_list_incl_0[n_ions]:
                 y_i[n_ions] += 1
 
         y_i.reverse()
@@ -517,7 +536,7 @@ def _get_raw_number_dark_single(date, scantime, exclude=[]):
     return (x, y)
 
 
-def _get_base_scantimes_single(date, superscantime, exclude=[], return_xvalues=False):
+def _get_subscantimes_single(date, superscantime, exclude=[], return_xvalues=False):
 
     superscantime = superscantime.replace('.', '_')
     
@@ -553,19 +572,19 @@ def _get_base_scantimes_single(date, superscantime, exclude=[], return_xvalues=F
     
     if MULTID_SCAN_MAP[superscan_expt_name][2] == 'old':
         # In data saved by the old script scanner, all subscans come after the super scan
-        base_scantimes = all_scantimes[index+1:index+1+nsubscans*npoints]
+        subscantimes = all_scantimes[index+1:index+1+nsubscans*npoints]
     elif MULTID_SCAN_MAP[superscan_expt_name][2] == 'new':
         # In data saved by the new script scanner, the subscans for the first data point come before the super scan, and the rest come after
-        base_scantimes = all_scantimes[index-nsubscans:index] + all_scantimes[index+1:index+1+nsubscans*(npoints-1)]
+        subscantimes = all_scantimes[index-nsubscans:index] + all_scantimes[index+1:index+1+nsubscans*(npoints-1)]
     
     # Remove scans to exclude
-    base_scantimes = _remove_excludes(base_scantimes, exclude)
+    subscantimes = _remove_excludes(subscantimes, exclude)
 
     if return_xvalues:
         x = _remove_excludes(x, exclude)
-        return (x, base_scantimes)
+        return (x, subscantimes)
     else:
-        return base_scantimes
+        return subscantimes
 
 
 def _get_photon_counts_single(date, scantime, exclude=[]):
@@ -606,7 +625,7 @@ def _get_photon_counts_single(date, scantime, exclude=[]):
 
 
 def _get_hist_single(date, scantime, histNum):
-    """Returns saved histogram for an experiment specified by an date, scan time, and number (as in general there may be multiple histograms saved for a scan."""
+    """Returns saved histogram for an experiment specified by an date, scan time, and number (as in general there may be multiple histograms saved for a scan)."""
 
     directory = get_data_directory(date, scantime)
     hist_prefix = '0000' + str(histNum + 2)
@@ -623,7 +642,7 @@ def _get_hist_single(date, scantime, histNum):
     # Extract the data
     data_arr = np.loadtxt(file_path, delimiter=',')
     if data_arr.ndim == 1:
-        # If only 1 data point, expant into a 2d array
+        # If only 1 data point, expand into a 2d array
         data_arr = np.expand_dims(data_arr, axis=0)
 
     # Sort the data into x and y arrays
@@ -639,7 +658,8 @@ def _get_hist_single(date, scantime, histNum):
 
 def _remove_excludes(array_in, exclude):
     """Handles deleting excluded indices for both standard lists and numpy arrays"""
-    
+    exclude = list(exclude)
+
     # Shift indices to be positive
     for (i, el) in enumerate(exclude):
         if el < 0: exclude[i] = el + len(array_in)
