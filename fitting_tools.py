@@ -1,10 +1,6 @@
 import numpy as np
-import scipy.constants as scc
-import scipy.special as sp
-import scipy.misc as scm
+import collections
 from scipy.optimize import curve_fit
-from scipy.special import eval_genlaguerre as laguerre
-
 
 
 class function_fitter():
@@ -88,11 +84,11 @@ class function_fitter():
             # Make sure that none of the parameters set to be fixed are included here
             if param in self.params_fixed.keys():
                 raise ValueError('"{}" is already set as a fixed parameter.'.format(param))
-        # for param in fitbounds_dict:
-        #     # Make sure the value being passed for each parameter is actually a 2-tuple
-        #     bounds = fitbounds_dict[param]
-        #     assert isinstance(bounds, collections.Sequence), 'Bounds must be set as a 2-tuple. Use (+ or -) np.inf to indicate no (upper or lower) bound.'
-        #     assert len(bounds) == 2,                         'Bounds must be set as a 2-tuple. Use (+ or -) np.inf to indicate no (upper or lower) bound.'
+        for param in fitbounds_dict:
+            # Make sure the value being passed for each parameter is actually a 2-tuple
+            bounds = fitbounds_dict[param]
+            assert isinstance(bounds, collections.Sequence), 'Bounds must be set as a 2-tuple. Use (+ or -) np.inf to indicate no (upper or lower) bound.'
+            assert len(bounds) == 2,                         'Bounds must be set as a 2-tuple. Use (+ or -) np.inf to indicate no (upper or lower) bound.'
         self.fit_done = False
         self.params_tofit_fits = dict()
         self.fit_bounds = fitbounds_dict
