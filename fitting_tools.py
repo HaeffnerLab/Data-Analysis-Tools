@@ -87,13 +87,15 @@ class function_fitter():
         for param in fitbounds_dict:
             # Make sure the value being passed for each parameter is actually a 2-tuple
             bounds = fitbounds_dict[param]
-            assert isinstance(bounds, collections.Sequence), 'Bounds must be set as a 2-tuple. Use (+ or -) np.inf to indicate no (upper or lower) bound.'
-            assert len(bounds) == 2,                         'Bounds must be set as a 2-tuple. Use (+ or -) np.inf to indicate no (upper or lower) bound.'
+            assert hasattr(bounds, '__len__'), 'Bounds must be set as a 2-tuple. Use (+ or -) np.inf to indicate no (upper or lower) bound.'
+            assert len(bounds) == 2,           'Bounds must be set as a 2-tuple. Use (+ or -) np.inf to indicate no (upper or lower) bound.'
         self.fit_done = False
         self.params_tofit_fits = dict()
         self.fit_bounds = fitbounds_dict
 
     def do_fit(self, x, y, yerr=None, use_qpn=False, nmeasurements=100, print_result=False):
+        x = np.array(x)
+        
         if not self.guesses_set:
             raise RuntimeError('Guess values have not been set for parameters to fit. Call function_fitter.set_guess_params(guess_params) with a dictionary of parameter guess values as the argument.')
         # Construct the keyword argument inputs for p0 and bounds
@@ -127,14 +129,18 @@ class function_fitter():
         self.fit_done = True
         if print_result:
             self.print_fits()
+
+        return self.params_tofit_fits.copy()
     
     def eval_with_guesses(self, x):
+        x = np.array(x)
         if not self.guesses_set:
             raise RuntimeError('Guess values have not been set for parameters to fit. Call function_fitter.set_guess_params(guess_params) with a dictionary of parameter guess values as the argument.')
         reduced_args = self._guess_params_to_args()
         return self.reduced_fun(x, *reduced_args)
 
     def eval_with_fits(self, x):
+        x = np.array(x)
         if not self.fit_done:
             raise RuntimeError('Need to perform a fit first! Call function_fitter.do_fit().')
         reduced_args = self._fit_params_to_args()
